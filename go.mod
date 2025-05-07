@@ -1,4 +1,4 @@
-module github.com/JackSL/cestus
+module github.com/JackieSL/cestus
 
 go 1.23.2
 

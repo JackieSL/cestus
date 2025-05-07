@@ -265,6 +265,11 @@ func RunTests() {
 
 }
 
+type ClientImpl struct {
+
+}
+
+func 
 
 func main(){
 	// create a new Listener 
@@ -279,16 +284,21 @@ func main(){
 
 	// Register the CestusServerImpl with the gRPC server
 	logrus.Info("Starting gRPC server on port 50051")
-	go func(){
-		time.Sleep(2 * time.Second)
-		RunTests()
-	}()
-	// Start the gRPC server
-	err = grpcServer.Serve(lis)
-	if err != nil {
-		logrus.Fatalf("failed to serve: %v", err)
-	}
-	// Run tests
 
+	go func(){
+
+	
+	// Start the gRPC server
+		err = grpcServer.Serve(lis)
+		if err != nil {
+			logrus.Fatalf("failed to serve: %v", err)
+		}
+	// Run tests
+	}
+	end := make(chan int)
+
+
+
+	<- end
 
 }
