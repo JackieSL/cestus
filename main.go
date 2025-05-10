@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"hash/crc32"
 	"net"
+	"os"
+	"os/signal"
 	"time"
+
 	"github.com/JackieSL/cestus/grpc"
 	"github.com/sirupsen/logrus"
 	pb "google.golang.org/grpc"
 )
-
 
 var IEEETable = crc32.MakeTable(crc32.IEEE)
 
@@ -21,7 +23,7 @@ func init() {
 		ForceColors:   true,
 
 		TimestampFormat: "2006-01-02 15:04:05",
-		DisableQuote:     true,
+		DisableQuote:    true,
 	})
 
 	logrus.SetLevel(logrus.DebugLevel)
@@ -29,15 +31,15 @@ func init() {
 }
 
 type Namespace struct {
-	URI string
-	Data map[string][]byte
+	URI     string
+	Data    map[string][]byte
 	CRCVals map[string]uint32
 }
 
 func NewNamespace(uri string) *Namespace {
 	return &Namespace{
-		URI:  uri,
-		Data: make(map[string][]byte),
+		URI:     uri,
+		Data:    make(map[string][]byte),
 		CRCVals: make(map[string]uint32),
 	}
 }
@@ -49,7 +51,7 @@ func (ns *Namespace) Add(key string, value []byte) {
 
 func (ns *Namespace) Get(key string) ([]byte, bool) {
 	value, exists := ns.Data[key]
-	if exists{
+	if exists {
 		crc := crc32.Checksum(value, IEEETable)
 		if crc != ns.CRCVals[key] {
 			logrus.Warnf("CRC mismatch for key %s: expected %d, got %d", key, ns.CRCVals[key], crc)
@@ -68,22 +70,21 @@ func (ns *Namespace) Delete(key string) {
 //	Get(context.Context, *Request) (*Response, error)
 //	Set(context.Context, *Request) (*Result, error)
 //	Delete(context.Context, *Request) (*Result, error)a
-//	mustEmbedUnimplementedCestusServer()                      
+//	mustEmbedUnimplementedCestusServer()
 //}
 
 type CestusServerImpl struct {
 	grpc.UnimplementedCestusServer
-	Host string
+	Host       string
 	Namespaces map[string]*Namespace
 }
 
 func NewCestusServer(host string) *CestusServerImpl {
 	return &CestusServerImpl{
-		Host: host,
+		Host:       host,
 		Namespaces: make(map[string]*Namespace),
 	}
 }
-
 
 func (s *CestusServerImpl) Get(ctx context.Context, req *grpc.Request) (*grpc.Response, error) {
 	// Check if the namespace exists
@@ -129,176 +130,72 @@ func (s *CestusServerImpl) Delete(ctx context.Context, req *grpc.Request) (*grpc
 	return &grpc.Result{Success: true}, nil
 }
 
-type CestusClientImpl struct {
-	Host string
-}
+func (s *CestusServerImpl) Run(ctx context.Context) error {
+	errChan := make(chan error)
+	go func() {
+		lis, err := net.Listen("tcp", ":50051")
+		if err != nil {
+			logrus.Fatalf("failed to listen: %v", err)
+		}
+		grpcServer := pb.NewServer()
 
-func NewCestusClient(host string) *CestusClientImpl {
-	return &CestusClientImpl{
-		Host: host,
-	}
-}
+		cestusServer := NewCestusServer(":50051")
 
-func (c *CestusClientImpl) Get(ctx context.Context, req *grpc.Request) (*grpc.Response, error) {
-	conn, err := pb.Dial(c.Host, pb.WithInsecure())
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to server: %v", err)
-	}
-	defer conn.Close()
+		grpc.RegisterCestusServer(grpcServer, cestusServer)
 
-	client := grpc.NewCestusClient(conn)
+		// Register the CestusServerImpl with the gRPC server
+		logrus.Info("Starting gRPC server on port 50051")
 
-	// Call the Get method on the server
-	resp, err := client.Get(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get value: %v", err)
-	}
-
-	return resp, nil
-}
-
-func (c *CestusClientImpl) Set(ctx context.Context, data *grpc.Data) (*grpc.Result, error) {
-	conn, err := pb.Dial(c.Host, pb.WithInsecure())
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to server: %v", err)
-	}
-	defer conn.Close()
-
-	client := grpc.NewCestusClient(conn)
-
-	// Call the Set method on the server
-	resp, err := client.Set(ctx, data)
-	if err != nil {
-		return nil, fmt.Errorf("failed to set value: %v", err)
-	}
-
-	return resp, nil
-}
-
-func (c *CestusClientImpl) Delete(ctx context.Context, req *grpc.Request) (*grpc.Result, error) {
-	conn, err := pb.Dial(c.Host, pb.WithInsecure())
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to server: %v", err)
-	}
-	defer conn.Close()
-
-	client := grpc.NewCestusClient(conn)
-
-	// Call the Delete method on the server
-	resp, err := client.Delete(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to delete value: %v", err)
-	}
-
-	return resp, nil
-}
-
-func RunTests() {
-	client := NewCestusClient("localhost:50051")
-	ctx := context.Background()
-	// Create a new namespace
-	namespace := "test_namespace"
-	// Create a new key-value pair
-	key := "test_key"
-	value := []byte("test_value")
-
-	// Set the key-value pair in the namespace
-	data := &grpc.Data{
-		Namespace: namespace,
-		Key:       key,
-		Value:     value,
-	}
-
-	result, err := client.Set(ctx, data)
-
-	if err != nil {
-		logrus.Errorf("Failed to set value: %v", err)
-		return
-	}
-
-	if !result.Success {
-		logrus.Errorf("Failed to set value: %v", result)
-		return
-	}
-
-	// Get the value from the namespace
-	req := &grpc.Request{
-		Namespace: namespace,
-		Key:       key,
-	}
-
-	resp, err := client.Get(ctx, req)
-	if err != nil {
-		logrus.Errorf("Failed to get value: %v", err)
-		return
-	}
-
-	if resp.Value == nil {
-		logrus.Errorf("Failed to get value: %v", resp)
-		return
-	}
-
-	// Check if the value matches
-	if string(resp.Value) != string(value) {
-		logrus.Errorf("Value mismatch: expected %s, got %s", value, resp.Value)
-		return
-	}
-
-	logrus.Infof("Successfully set and got value: %s", resp.Value)
-	// Delete the key from the namespace
-	deleteReq := &grpc.Request{
-		Namespace: namespace,
-		Key:       key,
-	}
-
-	deleteResult, err := client.Delete(ctx, deleteReq)
-	if err != nil {
-		logrus.Errorf("Failed to delete value: %v", err)
-		return
-	}
-
-	if !deleteResult.Success {
-		logrus.Errorf("Failed to delete value: %v", deleteResult)
-		return
-	}
-
-
-}
-
-type ClientImpl struct {
-
-}
-
-func 
-
-func main(){
-	// create a new Listener 
-	lis, err := net.Listen("tcp", ":50051")
-	if err != nil {
-		logrus.Fatalf("failed to listen: %v", err)
-	}
-	grpcServer := pb.NewServer()
-
-
-	grpc.RegisterCestusServer(grpcServer, &CestusServerImpl{})
-
-	// Register the CestusServerImpl with the gRPC server
-	logrus.Info("Starting gRPC server on port 50051")
-
-	go func(){
-
-	
-	// Start the gRPC server
 		err = grpcServer.Serve(lis)
 		if err != nil {
-			logrus.Fatalf("failed to serve: %v", err)
+			errChan <- err
+		} else {
+			errChan <- nil
 		}
-	// Run tests
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case err := <-errChan:
+			if err == nil {
+				logrus.Info("Server stop requested. Im tird Bows :(")
+			}
+			return err
+		}
 	}
-	end := make(chan int)
+}
 
+func (c *CestusServerImpl) MonitorBackground(ctx context.Context) {
 
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			logrus.WithFields(logrus.Fields{
+				"namespace_count": len(c.Namespaces),
+				"crc_check":       c.ValidateData(),
+			})
+			time.Sleep(10 * time.Second)
+		}
+	}
+}
 
-	<- end
+func (c *CestusServerImpl) ValidateData() bool {
+	return true
+}
+
+func main() {
+	// create a new Listener
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
+	server := NewCestusServer(":50051")
+	go server.MonitorBackground(ctx)
+	err := server.Run(ctx)
+
+	logrus.WithError(err).Info("Server ended.")
 
 }
